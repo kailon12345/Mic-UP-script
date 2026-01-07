@@ -1,3 +1,35 @@
+--[[
+    MIC UP ADMIN V3 - ULTIMATE EDITION
+    Advanced admin system with comprehensive features
+    
+    HEARTBEAT SYSTEM:
+    - Script sends heartbeat to Firebase every 60 seconds
+    - Firebase stores: user_id, username, tier, status, timestamp
+    - Your bot should check Firebase every minute and remove users
+      whose timestamp is older than 120 seconds (2 missed heartbeats)
+    - Discord webhook only used for initial connection (no spam)
+    - Logos automatically appear over active users' heads
+    
+    FIREBASE STRUCTURE:
+    /users/{user_id} = { user_id, username, display_name, tier, status, timestamp }
+    /commands = { cmd, target, args }
+]]
+
+-- =============================================
+-- CONFIGURATION (EDIT THESE)
+-- =============================================
+local DISCORD_WEBHOOK = "https://discord.com/api/webhooks/1458531708075774074/Z_hob2iU-AEv-1BjgN5eI_SCDgCQOvyXORlIWSXrgm5966ZpLom58N66KZ03M0eeZ4we"
+local CONFIG_URL = "https://raw.githubusercontent.com/kailon12345/Schweins-Dah3/refs/heads/main/config.json"
+local FIREBASE_URL = "https://mic-up-sil-default-rtdb.firebaseio.com"
+local LOGO_IMAGE = "rbxassetid://125753692300422"
+local GUI_KEYBIND = Enum.KeyCode.K
+local HEARTBEAT_INTERVAL = 60 -- Send heartbeat every 60 seconds
+
+-- =============================================
+-- SCRIPT START
+-- =============================================
+
+-- Cleanup
 if _G.MicUpAdminActive then 
     _G.MicUpAdminActive = false
     task.wait(0.5)
@@ -16,11 +48,7 @@ local lplr = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 local mouse = lplr:GetMouse()
 
-local CONFIG_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/config.json"
-local DISCORD_WEBHOOK = ""
-local FIREBASE_URL = ""
-
-
+-- Load remote config
 local function getRemoteConfig()
     local success, result = pcall(function()
         return game:HttpGet(CONFIG_URL .. "?t=" .. tick())
@@ -41,15 +69,14 @@ local leaderID = tonumber(Config.leaderID) or 7789664710
 if Config.premiumUsers then
     for _, id in pairs(Config.premiumUsers) do
         local numId = tonumber(id)
-        if numId then
-            premiumUsers[numId] = true
-        end
+        if numId then premiumUsers[numId] = true end
     end
 end
 
 -- State Variables
 local targetPlayer = nil
 local carouselTarget = nil
+local animationTarget = nil
 local currentTab = "Main"
 local baseplatePart = nil
 local baseplateColor = Color3.fromRGB(50, 50, 50)
@@ -59,14 +86,17 @@ local flying = false
 local carouselFlying = false
 local clickTpEnabled = false
 local carouselFrozen = false
+local currentAnimation = nil
+local commandBarVisible = false
 
 -- Flight controls
-local keys = {W = false, S = false, A = false, D = false, Q = false, E = false, Space = false, LeftShift = false}
+local keys = {W = false, S = false, A = false, D = false, Space = false, LeftShift = false}
 local ctrl = {f = 0, b = 0, l = 0, r = 0, u = 0, d = 0}
 
 -- Global tables
 _G.MicUpSettings = _G.MicUpSettings or {
     ShowNotifications = true,
+    GuiKeybind = GUI_KEYBIND
 }
 
 _G.Keybinds = _G.Keybinds or {
@@ -77,6 +107,7 @@ _G.Keybinds = _G.Keybinds or {
 
 _G.FrozenPlayers = _G.FrozenPlayers or {}
 _G.LoopKillTargets = _G.LoopKillTargets or {}
+_G.ScriptUsers = _G.ScriptUsers or {}
 
 -- Utility Functions
 local function notify(title, text, duration)
@@ -99,7 +130,6 @@ local function getRoot(char)
 end
 
 local function sendWebhook(content)
-    if DISCORD_WEBHOOK == "YOUR_WEBHOOK_URL_HERE" then return end
     local req = (syn and syn.request) or request or http_request
     if req then
         task.spawn(function()
@@ -119,18 +149,73 @@ local function isPremium(userId)
     return premiumUsers[userId] == true
 end
 
-local function say(msg)
-    local rep = game:GetService("ReplicatedStorage")
-    local textChat = game:GetService("TextChatService")
-    local events = rep:FindFirstChild("DefaultChatSystemChatEvents")
-    local remote = events and events:FindFirstChild("SayMessageRequest")
-    if remote then
-        remote:FireServer(msg, "All")
-    else
-        local chan = textChat:FindFirstChild("TextChannels") and textChat.TextChannels:FindFirstChild("RBXGeneral")
-        if chan then chan:SendAsync(msg) end
+-- Logo System
+local function addLogo(p)
+    if not p or not p.Character then return end
+    local h = p.Character:FindFirstChild("Head")
+    if h and not p.Character:FindFirstChild("MicUpLogo") then
+        local b = Instance.new("BillboardGui", p.Character)
+        b.Name = "MicUpLogo"
+        b.Size = UDim2.new(1.2, 0, 1.2, 0)
+        b.Adornee = h
+        b.AlwaysOnTop = true
+        b.ExtentsOffset = Vector3.new(0, 3, 0)
+        local i = Instance.new("ImageLabel", b)
+        i.Size = UDim2.new(1, 0, 1, 0)
+        i.BackgroundTransparency = 1
+        i.Image = LOGO_IMAGE
+        Instance.new("UICorner", i).CornerRadius = UDim.new(1, 0)
     end
 end
+
+local function updateAllLogos()
+    for _, p in pairs(Players:GetPlayers()) do
+        if _G.ScriptUsers[p.UserId] then
+            addLogo(p)
+        end
+    end
+end
+
+-- Register this user
+_G.ScriptUsers[lplr.UserId] = true
+
+-- Send initial connection to Discord (one-time)
+sendWebhook(string.format("**[%s]** `%s` (ID: %d) loaded Mic Up Admin", getUserTier(), lplr.DisplayName, lplr.UserId))
+
+-- Heartbeat System - Send to Firebase every 60 seconds
+local function sendHeartbeat()
+    pcall(function()
+        local data = {
+            user_id = lplr.UserId,
+            username = lplr.Name,
+            display_name = lplr.DisplayName,
+            tier = getUserTier(),
+            status = "active",
+            timestamp = os.time()
+        }
+        
+        local req = (syn and syn.request) or request or http_request
+        if req then
+            req({
+                Url = FIREBASE_URL .. "/users/" .. lplr.UserId .. ".json",
+                Method = "PUT",
+                Headers = {["Content-Type"] = "application/json"},
+                Body = HttpService:JSONEncode(data)
+            })
+        end
+    end)
+end
+
+-- Send initial heartbeat immediately
+sendHeartbeat()
+
+-- Start heartbeat loop
+task.spawn(function()
+    while _G.MicUpAdminActive do
+        task.wait(HEARTBEAT_INTERVAL)
+        sendHeartbeat()
+    end
+end)
 
 -- Flight System
 UIS.InputBegan:Connect(function(input, gpe)
@@ -138,7 +223,6 @@ UIS.InputBegan:Connect(function(input, gpe)
     local key = input.KeyCode.Name
     if keys[key] ~= nil then keys[key] = true end
     
-    -- Flight controls
     if input.KeyCode == Enum.KeyCode.W then ctrl.f = 1
     elseif input.KeyCode == Enum.KeyCode.S then ctrl.b = -1
     elseif input.KeyCode == Enum.KeyCode.A then ctrl.l = -1
@@ -240,6 +324,17 @@ local function getCarouselSeats()
     return seats
 end
 
+local function setCarouselCollision(enabled)
+    local carousel = getCarousel()
+    if not carousel then return end
+    
+    for _, v in pairs(carousel:GetDescendants()) do
+        if v:IsA("BasePart") then
+            v.CanCollide = enabled
+        end
+    end
+end
+
 local function sitInCarousel(seatIndex)
     local seats = getCarouselSeats()
     if #seats == 0 then
@@ -267,14 +362,85 @@ local function detachCarousel()
         return
     end
     
-    -- Unanchor all parts
+    setCarouselCollision(false)
+    
     for _, v in pairs(carousel:GetDescendants()) do
         if v:IsA("BasePart") then
             v.Anchored = false
         end
     end
     
-    notify("Carousel", "Detached from floor", 2)
+    notify("Carousel", "Detached and collision disabled", 2)
+end
+
+local function freezeCarousel()
+    carouselFrozen = true
+    local carousel = getCarousel()
+    if not carousel then
+        notify("Error", "Carousel not found", 3)
+        return
+    end
+    
+    for _, v in pairs(carousel:GetDescendants()) do
+        if v:IsA("BasePart") then
+            v.Anchored = true
+            v.Velocity = Vector3.zero
+        end
+    end
+    
+    notify("Carousel", "Frozen in place", 2)
+end
+
+local function unfreezeCarousel()
+    carouselFrozen = false
+    local carousel = getCarousel()
+    if not carousel then
+        notify("Error", "Carousel not found", 3)
+        return
+    end
+    
+    for _, v in pairs(carousel:GetDescendants()) do
+        if v:IsA("BasePart") then
+            v.Anchored = false
+        end
+    end
+    
+    notify("Carousel", "Unfrozen", 2)
+end
+
+local function voidCarousel()
+    local root = getRoot(lplr.Character)
+    if not root then return end
+    
+    local originalPos = root.CFrame
+    
+    notify("Void", "Giving anti-void...", 2)
+    
+    -- Give anti-void (high position)
+    root.CFrame = CFrame.new(originalPos.Position + Vector3.new(0, 500, 0))
+    task.wait(0.3)
+    
+    -- Void everyone in carousel
+    notify("Void", "Voiding carousel occupants...", 2)
+    local seats = getCarouselSeats()
+    for _, seat in pairs(seats) do
+        if seat.Occupant then
+            local player = Players:GetPlayerFromCharacter(seat.Occupant.Parent)
+            if player and player ~= lplr then
+                local targetRoot = getRoot(player.Character)
+                if targetRoot then
+                    targetRoot.CFrame = CFrame.new(0, -1000, 0)
+                end
+            end
+        end
+    end
+    
+    task.wait(1)
+    
+    -- Return to original position
+    notify("Void", "Returning to position...", 2)
+    root.CFrame = originalPos
+    notify("Void", "Complete!", 2)
 end
 
 local function startCarouselFlight()
@@ -286,7 +452,6 @@ local function startCarouselFlight()
     
     carouselFlying = true
     
-    -- Find the main seat you're sitting in
     local mainSeat = nil
     for _, seat in pairs(getCarouselSeats()) do
         if seat.Occupant and seat.Occupant.Parent == lplr.Character then
@@ -348,7 +513,7 @@ end
 
 local function carouselAbduction()
     if not carouselTarget or not carouselTarget.Character then
-        notify("Error", "Select a carousel target player first", 3)
+        notify("Error", "Select a carousel target first", 3)
         return
     end
     
@@ -358,21 +523,36 @@ local function carouselAbduction()
     
     if not myRoot or not targetRoot then return end
     
-    notify("Abduction", "Step 1: Teleporting to target...", 2)
+    notify("Abduction", "Step 1: Sitting in carousel...", 2)
     
-    -- Step 1: Teleport to target
-    myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, 0, 5)
-    task.wait(0.5)
-    
-    -- Step 2: Sit in carousel
-    notify("Abduction", "Step 2: Sitting in carousel...", 2)
     local seat = sitInCarousel(1)
     if not seat then return end
     
     task.wait(0.5)
     
-    -- Step 3: Position target in opposite seat
-    notify("Abduction", "Step 3: Positioning target...", 2)
+    notify("Abduction", "Step 2: Detaching carousel...", 2)
+    detachCarousel()
+    task.wait(0.3)
+    
+    notify("Abduction", "Step 3: Teleporting to target...", 2)
+    local carousel = getCarousel()
+    if carousel then
+        local basePart = carousel:FindFirstChildWhichIsA("BasePart")
+        if basePart then
+            local offset = basePart.Position
+            local targetPos = targetRoot.Position + Vector3.new(5, 0, 0)
+            for _, v in pairs(carousel:GetDescendants()) do
+                if v:IsA("BasePart") then
+                    local relativePos = v.Position - offset
+                    v.CFrame = CFrame.new(targetPos + relativePos) * (v.CFrame - v.Position)
+                end
+            end
+        end
+    end
+    
+    task.wait(0.5)
+    
+    notify("Abduction", "Step 4: Collecting target...", 2)
     local seats = getCarouselSeats()
     local oppositeSeat = seats[math.ceil(#seats / 2)]
     if oppositeSeat then
@@ -383,19 +563,11 @@ local function carouselAbduction()
     
     task.wait(0.5)
     
-    -- Step 4: Detach and start flying
-    notify("Abduction", "Step 4: Detaching carousel...", 2)
-    detachCarousel()
-    task.wait(0.3)
     startCarouselFlight()
-    
     task.wait(1)
     
-    -- Step 5: Teleport to secret room
     notify("Abduction", "Step 5: Flying to tea party...", 2)
-    local carousel = getCarousel()
     if carousel then
-        -- Move entire carousel to secret room
         local basePart = carousel:FindFirstChildWhichIsA("BasePart")
         if basePart then
             local offset = basePart.Position
@@ -410,73 +582,53 @@ local function carouselAbduction()
     
     task.wait(0.5)
     
-    -- Step 6: Freeze position
     notify("Abduction", "Arrived at tea party! Position frozen.", 3)
-    carouselFrozen = true
-    
-    -- Anchor all carousel parts to freeze it
-    if carousel then
-        for _, v in pairs(carousel:GetDescendants()) do
-            if v:IsA("BasePart") then
-                v.Anchored = true
-                v.Velocity = Vector3.zero
-            end
-        end
-    end
-end
-
-local function returnCarouselToMap()
-    local carousel = getCarousel()
-    if not carousel then
-        notify("Error", "Carousel not found", 3)
-        return
-    end
-    
-    -- Return to spawn position (approximate)
-    local spawnPos = Vector3.new(0, 5, 0)
-    
-    local basePart = carousel:FindFirstChildWhichIsA("BasePart")
-    if basePart then
-        local offset = basePart.Position
-        for _, v in pairs(carousel:GetDescendants()) do
-            if v:IsA("BasePart") then
-                v.Anchored = false
-                local relativePos = v.Position - offset
-                v.CFrame = CFrame.new(spawnPos + relativePos) * (v.CFrame - v.Position)
-            end
-        end
-    end
-    
-    stopCarouselFlight()
-    notify("Carousel", "Returned to map area", 2)
+    freezeCarousel()
 end
 
 -- Animation Functions
 local animationIds = {
-    ["TikTok Rizz"] = "rbxassetid://13244837318",
-    ["Griddy"] = "rbxassetid://11710529975",
-    ["Kai Cenat"] = "rbxassetid://13825966891",
-    ["Chill"] = "rbxassetid://3695333486",
+    ["Default Dance"] = "rbxassetid://5938391146",
     ["Floss"] = "rbxassetid://5917459365",
     ["Orange Justice"] = "rbxassetid://5938365243",
     ["Take The L"] = "rbxassetid://5915714366",
-    ["Default Dance"] = "rbxassetid://5938391146",
-}
-
-local susAnimationIds = {
+    ["Griddy"] = "rbxassetid://11710529975",
+    ["Kai Cenat"] = "rbxassetid://13825966891",
+    ["TikTok Rizz"] = "rbxassetid://13244837318",
+    ["Wave"] = "rbxassetid://507770239",
+    ["Point"] = "rbxassetid://507770453",
+    ["Laugh"] = "rbxassetid://507770818",
+    ["Cheer"] = "rbxassetid://507770677",
     ["Thrusting"] = "rbxassetid://148840371",
     ["Twerk"] = "rbxassetid://5918726674",
     ["Catwalk"] = "rbxassetid://5938413064",
-    ["Salute"] = "rbxassetid://3696763549",
     ["Hero Landing"] = "rbxassetid://5104344710",
+    ["Chill"] = "rbxassetid://3695333486",
+    ["Sit"] = "rbxassetid://507768133",
+    ["Robloxian"] = "rbxassetid://5101907645"
 }
 
-local function playAnimation(animName, animList)
-    local animId = animList[animName]
-    if not animId then return end
-    
+local function stopAllAnimations()
     local char = lplr.Character
     if not char then return end
+    
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+    
+    for _, track in pairs(humanoid:GetPlayingAnimationTracks()) do
+        track:Stop()
+    end
+    
+    currentAnimation = nil
+    notify("Animation", "All animations stopped", 2)
+end
+
+local function playAnimation(animName, targetChar)
+    local char = targetChar or lplr.Character
+    if not char then return end
+    
+    local animId = animationIds[animName]
+    if not animId then return end
     
     local humanoid = char:FindFirstChildOfClass("Humanoid")
     if not humanoid then return end
@@ -487,35 +639,77 @@ local function playAnimation(animName, animList)
     local track = humanoid:LoadAnimation(anim)
     track:Play()
     
+    if char == lplr.Character then
+        currentAnimation = track
+    end
+    
     notify("Animation", animName .. " playing", 2)
 end
 
--- Click TP
-mouse.Button1Down:Connect(function()
-    if clickTpEnabled and mouse.Target then
-        local root = getRoot(lplr.Character)
-        if root then
-            root.CFrame = CFrame.new(mouse.Hit.Position + Vector3.new(0, 3, 0))
-        end
-    end
+-- Command Bar System
+local commandBarGui = nil
+
+local function createCommandBar()
+    if commandBarGui then commandBarGui:Destroy() end
     
-    -- Ctrl+Click selection
-    if UIS:IsKeyDown(Enum.KeyCode.LeftControl) or UIS:IsKeyDown(Enum.KeyCode.RightControl) then
-        local char = mouse.Target and mouse.Target:FindFirstAncestorOfClass("Model")
-        local p = char and Players:GetPlayerFromCharacter(char)
-        if p and p ~= lplr then
-            if currentTab == "Carousel" then
-                carouselTarget = p
-                notify("Carousel Target", "Selected: " .. p.DisplayName, 2)
-            else
-                targetPlayer = p
-                notify("Target", "Selected: " .. p.DisplayName, 2)
-            end
+    commandBarGui = Instance.new("ScreenGui", lplr.PlayerGui)
+    commandBarGui.Name = "CommandBar"
+    commandBarGui.ResetOnSpawn = false
+    commandBarGui.DisplayOrder = 1000
+    
+    local frame = Instance.new("Frame", commandBarGui)
+    frame.Size = UDim2.new(0.5, 0, 0, 40)
+    frame.Position = UDim2.new(0.25, 0, 0, 10)
+    frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    frame.BorderSizePixel = 0
+    
+    local corner = Instance.new("UICorner", frame)
+    corner.CornerRadius = UDim.new(0, 8)
+    
+    local textBox = Instance.new("TextBox", frame)
+    textBox.Size = UDim2.new(1, -20, 1, -10)
+    textBox.Position = UDim2.new(0, 10, 0, 5)
+    textBox.BackgroundTransparency = 1
+    textBox.TextColor3 = Color3.new(1, 1, 1)
+    textBox.PlaceholderText = "Enter command..."
+    textBox.Text = ""
+    textBox.TextXAlignment = Enum.TextXAlignment.Left
+    textBox.Font = Enum.Font.Code
+    textBox.TextSize = 16
+    textBox.ClearTextOnFocus = false
+    
+    textBox.FocusLost:Connect(function(enterPressed)
+        if enterPressed and textBox.Text ~= "" then
+            -- Execute command silently (no chat)
+            local cmd = ";" .. textBox.Text
+            handleCommand(cmd, {UserId = lplr.UserId, Character = lplr.Character})
+            textBox.Text = ""
+        end
+        commandBarGui.Enabled = false
+        commandBarVisible = false
+    end)
+    
+    commandBarGui.Enabled = false
+    
+    return textBox
+end
+
+local commandTextBox = createCommandBar()
+
+UIS.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    
+    if input.KeyCode == Enum.KeyCode.Semicolon then
+        commandBarVisible = not commandBarVisible
+        commandBarGui.Enabled = commandBarVisible
+        if commandBarVisible then
+            task.wait()
+            commandTextBox:CaptureFocus()
         end
     end
 end)
 
--- Command System
+-- Command System (Silent Execution)
 local function handleCommand(m, speaker)
     local a = string.split(m:lower(), " ")
     local cmd = a[1]
@@ -547,7 +741,6 @@ local function handleCommand(m, speaker)
     local r = getRoot(c)
 
     if cmd == ";check" or cmd == ";users" then
-        say("(Mic Up User): " .. lplr.DisplayName .. " [" .. myTier .. "]")
         return
     end
 
@@ -556,7 +749,6 @@ local function handleCommand(m, speaker)
 
     if cmd == ";freeze" then
         _G.FrozenPlayers[lplr.UserId] = true
-        
     elseif cmd == ";unfreeze" then
         _G.FrozenPlayers[lplr.UserId] = false
         if h then 
@@ -571,97 +763,58 @@ local function handleCommand(m, speaker)
                 end
             end
         end
-        
     elseif cmd == ";kick" then
         lplr:Kick("Kicked by " .. speaker.Name)
-        
     elseif cmd == ";kill" then
         if h then h.Health = 0 end
-        
     elseif cmd == ";loopkill" then
         _G.LoopKillTargets[lplr.UserId] = true
-        
     elseif cmd == ";unloop" then
         _G.LoopKillTargets[lplr.UserId] = false
-        
     elseif cmd == ";void" then
         if r then r.CFrame = CFrame.new(0, -1000, 0) end
-        
     elseif cmd == ";fling" then
         if r and h then
-            local oldAnchor = r.Anchored
             r.Anchored = true
-            
             local bv = Instance.new("BodyVelocity", r)
             bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
             bv.Velocity = Vector3.new(math.random(-200, 200), 300, math.random(-200, 200))
-            
             r.Anchored = false
-            
             task.wait(0.1)
-            if bv and bv.Parent then
-                bv:Destroy()
-            end
+            if bv and bv.Parent then bv:Destroy() end
         end
-        
     elseif cmd == ";sit" then
         if h then h.Sit = true end
-        
     elseif cmd == ";jump" then
         if h then h.Jump = true end
-        
     elseif cmd == ";bring" then
         local speakerRoot = speaker and speaker.Character and getRoot(speaker.Character)
         if speakerRoot and r then
             r.CFrame = speakerRoot.CFrame * CFrame.new(0, 0, -3)
         end
-        
-    elseif m:sub(1, 5) == ";say " then
-        say(m:sub(6))
+    elseif cmd == ";disableanim" or cmd == ";stopanims" then
+        stopAllAnimations()
     end
 end
 
--- Firebase Command Polling
+-- Firebase polling
 task.spawn(function()
     while _G.MicUpAdminActive do
         pcall(function()
-            if FIREBASE_URL ~= "https://YOUR-PROJECT-ID.firebaseio.com/commands.json" then
-                local res = HttpService:GetAsync(FIREBASE_URL .. "?t=" .. tick())
-                local data = HttpService:JSONDecode(res)
-                
-                if data and (data.target == "all" or data.target == lplr.Name) then
-                    -- Convert Firebase command to chat format
-                    local cmd = ";" .. data.cmd
-                    if data.args then
-                        cmd = cmd .. " " .. data.args
-                    end
-                    
-                    -- Execute as if it was a chat command
-                    local c = lplr.Character
-                    local h = c and c:FindFirstChildOfClass("Humanoid")
-                    local r = getRoot(c)
-                    
-                    if data.cmd == "fly" then
-                        if not flying then startFlight() end
-                    elseif data.cmd == "unfly" then
-                        if flying then stopFlight() end
-                    elseif data.cmd == "kill" then
-                        if h then h.Health = 0 end
-                    elseif data.cmd == "freeze" then
-                        _G.FrozenPlayers[lplr.UserId] = true
-                    elseif data.cmd == "unfreeze" then
-                        _G.FrozenPlayers[lplr.UserId] = false
-                    elseif data.cmd == "kick" then
-                        lplr:Kick("Kicked via Firebase")
-                    end
-                end
+            local res = HttpService:GetAsync(FIREBASE_URL .. "/commands.json?t=" .. tick())
+            local data = HttpService:JSONDecode(res)
+            
+            if data and (data.target == "all" or data.target == lplr.Name) then
+                local cmd = ";" .. data.cmd
+                if data.args then cmd = cmd .. " " .. data.args end
+                handleCommand(cmd, {UserId = leaderID, Character = nil})
             end
         end)
         task.wait(2)
     end
 end)
 
--- Monitor for frozen players
+-- Monitor frozen/loop kill
 task.spawn(function()
     while task.wait(0.05) do
         for userId, frozen in pairs(_G.FrozenPlayers) do
@@ -686,7 +839,6 @@ task.spawn(function()
     end
 end)
 
--- Monitor for loop kill targets
 task.spawn(function()
     while task.wait(0.1) do
         for userId, active in pairs(_G.LoopKillTargets) do
@@ -694,16 +846,52 @@ task.spawn(function()
                 local p = game.Players:GetPlayerByUserId(userId)
                 if p and p.Character then
                     local h = p.Character:FindFirstChildOfClass("Humanoid")
-                    if h and h.Health > 0 then
-                        h.Health = 0
-                    end
+                    if h and h.Health > 0 then h.Health = 0 end
                 end
             end
         end
     end
 end)
 
--- Connect to chat
+-- Logo monitoring - Check Firebase for active users
+task.spawn(function()
+    while task.wait(5) do
+        pcall(function()
+            -- Get all active users from Firebase
+            local res = HttpService:GetAsync(FIREBASE_URL .. "/users.json?t=" .. tick())
+            local users = HttpService:JSONDecode(res)
+            
+            if users then
+                -- Clear old script users
+                _G.ScriptUsers = {}
+                
+                -- Add active users
+                for userId, userData in pairs(users) do
+                    local numId = tonumber(userId)
+                    if numId and userData.status == "active" then
+                        -- Check if timestamp is recent (within 2 minutes)
+                        local timeDiff = os.time() - userData.timestamp
+                        if timeDiff < 120 then
+                            _G.ScriptUsers[numId] = true
+                        end
+                    end
+                end
+                
+                -- Update logos
+                updateAllLogos()
+            end
+        end)
+    end
+end)
+
+Players.PlayerAdded:Connect(function(p)
+    p.CharacterAdded:Connect(function()
+        task.wait(1)
+        updateAllLogos()
+    end)
+end)
+
+-- Chat monitoring (for external commands)
 Players.PlayerChatted:Connect(function(s, p, m)
     if p.UserId == leaderID or isPremium(p.UserId) then 
         handleCommand(m, p) 
@@ -726,7 +914,7 @@ end
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 local Window = Rayfield:CreateWindow({
-    Name = "Mic Up Admin V2 | " .. getUserTier(),
+    Name = "Mic Up Admin V3 | " .. getUserTier(),
     LoadingTitle = "Loading Admin...",
     LoadingSubtitle = "by [Schwein]",
     ConfigurationSaving = {Enabled = false},
@@ -778,7 +966,8 @@ MainTab:CreateButton({
     end
 })
 
-MainTab:CreateLabel("Tip: Ctrl+Click a player to select them")
+MainTab:CreateLabel("Tip: Ctrl+Click a player to select (Main)")
+MainTab:CreateLabel("Hold ; key for command bar")
 
 MainTab:CreateSection("Movement")
 
@@ -855,7 +1044,6 @@ CarouselTab:CreateButton({
 })
 
 CarouselTab:CreateLabel("Tip: Ctrl+Click while in Carousel tab")
-CarouselTab:CreateLabel("to quickly select carousel target")
 
 CarouselTab:CreateSection("Carousel Controls")
 
@@ -885,12 +1073,33 @@ CarouselTab:CreateToggle({
     end
 })
 
-CarouselTab:CreateSection("Abduction Mode")
+CarouselTab:CreateButton({
+    Name = "❄️ Freeze Carousel",
+    Callback = function()
+        freezeCarousel()
+    end
+})
 
 CarouselTab:CreateButton({
-    Name = "🛸 Carousel Abduction (Full Process)",
+    Name = "🔥 Unfreeze Carousel",
+    Callback = function()
+        unfreezeCarousel()
+    end
+})
+
+CarouselTab:CreateSection("Special Actions")
+
+CarouselTab:CreateButton({
+    Name = "🛸 Full Carousel Kidnapping",
     Callback = function()
         carouselAbduction()
+    end
+})
+
+CarouselTab:CreateButton({
+    Name = "🌌 Void Carousel (Anti-Void)",
+    Callback = function()
+        voidCarousel()
     end
 })
 
@@ -904,140 +1113,97 @@ CarouselTab:CreateButton({
     end
 })
 
-CarouselTab:CreateButton({
-    Name = "Unfreeze Carousel",
-    Callback = function()
-        carouselFrozen = false
-        local carousel = getCarousel()
-        if carousel then
-            for _, v in pairs(carousel:GetDescendants()) do
-                if v:IsA("BasePart") then
-                    v.Anchored = false
-                end
-            end
-        end
-        notify("Carousel", "Unfrozen", 2)
-    end
-})
+CarouselTab:CreateLabel("")
+CarouselTab:CreateLabel("Go through portal to return carousel!")
 
-CarouselTab:CreateButton({
-    Name = "Return Carousel to Map",
-    Callback = function()
-        returnCarouselToMap()
-    end
-})
-
--- Commands Tab
-local CommandsTab = Window:CreateTab("⚡ Commands", 4483362458)
-
-CommandsTab:CreateSection("Chat Command System")
-
-CommandsTab:CreateLabel("Send commands via chat:")
-CommandsTab:CreateLabel("Format: ;command target")
-CommandsTab:CreateLabel("Example: ;freeze john")
-CommandsTab:CreateLabel("")
-CommandsTab:CreateLabel("Commands work through:")
-CommandsTab:CreateLabel("• In-game chat")
-CommandsTab:CreateLabel("• Firebase database")
-CommandsTab:CreateLabel("• Discord webhook bot")
-
-CommandsTab:CreateSection("Available Commands")
-
-CommandsTab:CreateLabel("Control Commands:")
-CommandsTab:CreateLabel("• ;check [target] - Check users")
-CommandsTab:CreateLabel("• ;freeze [target] - Freeze player")
-CommandsTab:CreateLabel("• ;unfreeze [target] - Unfreeze player")
-CommandsTab:CreateLabel("• ;bring [target] - Bring player")
-CommandsTab:CreateLabel("")
-
-CommandsTab:CreateLabel("Action Commands:")
-CommandsTab:CreateLabel("• ;kill [target] - Kill player")
-CommandsTab:CreateLabel("• ;loopkill [target] - Loop kill player")
-CommandsTab:CreateLabel("• ;unloop [target] - Stop loop kill")
-CommandsTab:CreateLabel("• ;fling [target] - Fling player")
-CommandsTab:CreateLabel("• ;void [target] - Void player")
-CommandsTab:CreateLabel("• ;sit [target] - Make player sit")
-CommandsTab:CreateLabel("• ;jump [target] - Make player jump")
-CommandsTab:CreateLabel("")
-
-CommandsTab:CreateLabel("Host Commands:")
-CommandsTab:CreateLabel("• ;kick [target] - Kick player")
-CommandsTab:CreateLabel("• ;say [message] - Say message")
-CommandsTab:CreateLabel("")
-
-CommandsTab:CreateSection("Quick Actions")
-
-local commandTarget = "all"
-
-CommandsTab:CreateInput({
-    Name = "Command Target",
-    PlaceholderText = "Username or 'all'",
-    RemoveTextAfterFocusLost = false,
-    Callback = function(Text)
-        commandTarget = Text
-    end
-})
-
-CommandsTab:CreateButton({
-    Name = "Send: ;check",
-    Callback = function()
-        say(";check " .. commandTarget)
-    end
-})
-
-CommandsTab:CreateButton({
-    Name = "Send: ;freeze",
-    Callback = function()
-        say(";freeze " .. commandTarget)
-    end
-})
-
-CommandsTab:CreateButton({
-    Name = "Send: ;unfreeze",
-    Callback = function()
-        say(";unfreeze " .. commandTarget)
-    end
-})
-
--- Booth Tab (Under Development)
-local BoothTab = Window:CreateTab("🏪 Booths", 4483362458)
-
-BoothTab:CreateSection("🚧 Under Development 🚧")
-BoothTab:CreateLabel("")
-BoothTab:CreateLabel("Booth automation features are")
-BoothTab:CreateLabel("currently being developed.")
-BoothTab:CreateLabel("")
-BoothTab:CreateLabel("Coming Soon:")
-BoothTab:CreateLabel("• Auto claim booths")
-BoothTab:CreateLabel("• Custom booth text")
-BoothTab:CreateLabel("• Mass booth control")
-BoothTab:CreateLabel("")
-BoothTab:CreateLabel("Stay tuned for updates!")
-
--- Animation Tab
+-- Animations Tab
 local AnimTab = Window:CreateTab("💃 Animations", 4483362458)
 
-AnimTab:CreateSection("Normal Animations")
+AnimTab:CreateSection("Animation Target")
+
+local AnimTargetInput = AnimTab:CreateInput({
+    Name = "Select Animation Target",
+    PlaceholderText = "Leave empty for self...",
+    Callback = function(Text)
+        if Text == "" then
+            animationTarget = nil
+            notify("Anim Target", "Set to self", 2)
+            return
+        end
+        for _, p in pairs(Players:GetPlayers()) do
+            if p.Name:lower():find(Text:lower()) or p.DisplayName:lower():find(Text:lower()) then
+                animationTarget = p
+                notify("Anim Target", "Selected: " .. p.DisplayName, 2)
+                return
+            end
+        end
+    end
+})
+
+AnimTab:CreateLabel("Tip: Ctrl+Click while in Animations tab")
+
+AnimTab:CreateSection("Animation Controls")
+
+AnimTab:CreateButton({
+    Name = "🛑 DISABLE ALL ANIMATIONS",
+    Callback = function()
+        stopAllAnimations()
+    end
+})
+
+AnimTab:CreateLabel("")
 
 for animName, _ in pairs(animationIds) do
     AnimTab:CreateButton({
         Name = animName,
         Callback = function()
-            playAnimation(animName, animationIds)
+            local targetChar = animationTarget and animationTarget.Character or lplr.Character
+            playAnimation(animName, targetChar)
         end
     })
 end
 
-AnimTab:CreateSection("😳 Sus Animations")
+-- Commands Tab
+local CommandsTab = Window:CreateTab("⚡ Commands", 4483362458)
 
-for animName, _ in pairs(susAnimationIds) do
-    AnimTab:CreateButton({
-        Name = animName,
-        Callback = function()
-            playAnimation(animName, susAnimationIds)
-        end
-    })
-end
+CommandsTab:CreateSection("Command System")
+
+CommandsTab:CreateLabel("Commands can be executed:")
+CommandsTab:CreateLabel("• Command bar: Hold ; key (Silent)")
+CommandsTab:CreateLabel("• Firebase/Discord bot")
+CommandsTab:CreateLabel("")
+
+CommandsTab:CreateButton({
+    Name = "📋 Show All Commands (F9 Console)",
+    Callback = function()
+        print("=== MIC UP ADMIN COMMANDS ===")
+        print("Press F9 or type /console to see this list")
+        print("")
+        print("CONTROL COMMANDS:")
+        print(";check [target] - Check users")
+        print(";freeze [target] - Freeze player")
+        print(";unfreeze [target] - Unfreeze player")
+        print(";bring [target] - Bring player to you")
+        print("")
+        print("ACTION COMMANDS:")
+        print(";kill [target] - Kill player")
+        print(";loopkill [target] - Loop kill")
+        print(";unloop [target] - Stop loop kill")
+        print(";fling [target] - Fling player")
+        print(";void [target] - Send to void")
+        print(";sit [target] - Make sit")
+        print(";jump [target] - Make jump")
+        print(";disableanim [target] - Stop animations")
+        print("")
+        print("HOST ONLY:")
+        print(";kick [target] - Kick player")
+        print("")
+        print("TARGET: Use 'all' or player name")
+        print("Example: ;freeze john")
+        print("=====================================")
+        notify("Commands", "List printed to console (F9)", 3)
+    end
+})
 
 -- World Tab
 local WorldTab = Window:CreateTab("🌍 World", 4483362458)
@@ -1053,12 +1219,14 @@ WorldTab:CreateToggle({
             if baseplatePart then baseplatePart:Destroy() end
             baseplatePart = Instance.new("Part", workspace)
             baseplatePart.Name = "AdminBaseplate"
-            baseplatePart.Size = Vector3.new(50000, 0.5, 50000)
-            baseplatePart.Position = Vector3.new(0, -0.75, 0)
+            baseplatePart.Size = Vector3.new(2048000, 1, 2048000)
+            baseplatePart.Position = Vector3.new(0, -1, 0)
             baseplatePart.Anchored = true
             baseplatePart.Color = baseplateColor
             baseplatePart.Material = Enum.Material.SmoothPlastic
-            notify("Baseplate", "Infinite baseplate enabled!", 2)
+            baseplatePart.TopSurface = Enum.SurfaceType.Smooth
+            baseplatePart.BottomSurface = Enum.SurfaceType.Smooth
+            notify("Baseplate", "Infinite baseplate enabled! (2M studs)", 2)
         elseif baseplatePart then
             baseplatePart:Destroy()
             baseplatePart = nil
@@ -1092,48 +1260,66 @@ SettingsTab:CreateToggle({
 
 SettingsTab:CreateSection("Keybinds")
 
-SettingsTab:CreateLabel("Current Keybinds:")
-SettingsTab:CreateLabel("• Flight: F")
-SettingsTab:CreateLabel("• Click TP: C")
-SettingsTab:CreateLabel("• Panic Mode: P")
-SettingsTab:CreateLabel("• Ctrl+Click: Select player")
+SettingsTab:CreateLabel("GUI Keybind: K (Rayfield default)")
+SettingsTab:CreateLabel("Command Bar: Hold ;")
+SettingsTab:CreateLabel("Flight: F")
+SettingsTab:CreateLabel("Click TP: C")
+SettingsTab:CreateLabel("Panic: P")
+
 SettingsTab:CreateLabel("")
-SettingsTab:CreateLabel("(Keybind customization coming soon)")
+SettingsTab:CreateLabel("Custom keybind system coming soon!")
 
 -- Credits
 local CreditsTab = Window:CreateTab("ℹ️ Credits", 4483362458)
-CreditsTab:CreateLabel("Mic Up Admin V2")
+CreditsTab:CreateLabel("Mic Up Admin V3 - Ultimate Edition")
 CreditsTab:CreateLabel("Tier: " .. getUserTier())
 CreditsTab:CreateLabel("")
 CreditsTab:CreateLabel("Features:")
-CreditsTab:CreateLabel("• Carousel Abduction System")
-CreditsTab:CreateLabel("• Chat Command Control")
+CreditsTab:CreateLabel("• Advanced Carousel Abduction")
+CreditsTab:CreateLabel("• Silent Command System")
+CreditsTab:CreateLabel("• Carousel Freeze & Void")
+CreditsTab:CreateLabel("• 17 Animations")
+CreditsTab:CreateLabel("• Heartbeat Active User Tracking")
+CreditsTab:CreateLabel("• Overhead Logo Detection")
 CreditsTab:CreateLabel("• Firebase Integration")
-CreditsTab:CreateLabel("• Custom Animations")
-CreditsTab:CreateLabel("• Advanced Flight System")
+CreditsTab:CreateLabel("")
+CreditsTab:CreateLabel("Heartbeat System:")
+CreditsTab:CreateLabel("Sends pulse every 60s to Firebase")
+CreditsTab:CreateLabel("Bot removes inactive users after 2 min")
 CreditsTab:CreateLabel("")
 CreditsTab:CreateLabel("Created by [Schwein]")
 
--- Track current tab for Ctrl+Click
-Window.Tabs = Window.Tabs or {}
-for tabName, tab in pairs({
-    Main = MainTab,
-    Carousel = CarouselTab,
-    Commands = CommandsTab,
-    Booths = BoothTab,
-    Animations = AnimTab,
-    World = WorldTab,
-    Settings = SettingsTab,
-    Credits = CreditsTab
-}) do
-    if tab.Button then
-        tab.Button.MouseButton1Click:Connect(function()
-            currentTab = tabName
-        end)
+-- Click TP & Selection
+mouse.Button1Down:Connect(function()
+    if clickTpEnabled and mouse.Target then
+        local root = getRoot(lplr.Character)
+        if root then
+            root.CFrame = CFrame.new(mouse.Hit.Position + Vector3.new(0, 3, 0))
+        end
     end
-end
+    
+    if UIS:IsKeyDown(Enum.KeyCode.LeftControl) or UIS:IsKeyDown(Enum.KeyCode.RightControl) then
+        local char = mouse.Target and mouse.Target:FindFirstAncestorOfClass("Model")
+        local p = char and Players:GetPlayerFromCharacter(char)
+        if p and p ~= lplr then
+            if currentTab == "Carousel" then
+                carouselTarget = p
+                CarouselTargetInput:Set(p.DisplayName)
+                notify("Carousel Target", "Selected: " .. p.DisplayName, 2)
+            elseif currentTab == "Animations" then
+                animationTarget = p
+                AnimTargetInput:Set(p.DisplayName)
+                notify("Anim Target", "Selected: " .. p.DisplayName, 2)
+            else
+                targetPlayer = p
+                MainTargetInput:Set(p.DisplayName)
+                notify("Target", "Selected: " .. p.DisplayName, 2)
+            end
+        end
+    end
+end)
 
--- Keybind handling
+-- Keybinds
 UIS.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     
@@ -1149,10 +1335,20 @@ UIS.InputBegan:Connect(function(input, gameProcessed)
         clickTpEnabled = false
         stopFlight()
         stopCarouselFlight()
+        stopAllAnimations()
         notify("PANIC", "All features disabled!", 3)
     end
 end)
 
+-- Track current tab
+for tabName, tab in pairs({Main = MainTab, Carousel = CarouselTab, Animations = AnimTab}) do
+    if tab.Button then
+        tab.Button.MouseButton1Click:Connect(function()
+            currentTab = tabName
+        end)
+    end
+end
+
 -- Initialize
-notify("Mic Up Admin V2", "Loaded successfully! Tier: " .. getUserTier(), 4)
-sendWebhook("**[" .. getUserTier() .. "]** `" .. lplr.DisplayName .. "` loaded Mic Up Admin V2")
+addLogo(lplr)
+notify("Mic Up Admin V3", "Loaded successfully! Tier: " .. getUserTier(), 4)
