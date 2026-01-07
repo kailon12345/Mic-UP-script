@@ -1,22 +1,16 @@
+
 local DISCORD_WEBHOOK = "https://discord.com/api/webhooks/1458531708075774074/Z_hob2iU-AEv-1BjgN5eI_SCDgCQOvyXORlIWSXrgm5966ZpLom58N66KZ03M0eeZ4we"
 local CONFIG_URL = "https://raw.githubusercontent.com/kailon12345/Schweins-Dah3/refs/heads/main/config.json"
 local FIREBASE_URL = "https://mic-up-sil-default-rtdb.firebaseio.com"
 local LOGO_IMAGE = "rbxassetid://125753692300422"
 local GUI_KEYBIND = Enum.KeyCode.K
-local HEARTBEAT_INTERVAL = 60 -- Send heartbeat every 60 seconds
-
--- =============================================
--- SCRIPT START
--- =============================================
-
--- Cleanup
+local HEARTBEAT_INTERVAL = 60
 if _G.MicUpAdminActive then 
     _G.MicUpAdminActive = false
     task.wait(0.5)
 end
 _G.MicUpAdminActive = true
 
--- Services
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -28,7 +22,6 @@ local lplr = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 local mouse = lplr:GetMouse()
 
--- Load remote config
 local function getRemoteConfig()
     local success, result = pcall(function()
         return game:HttpGet(CONFIG_URL .. "?t=" .. tick())
@@ -53,7 +46,6 @@ if Config.premiumUsers then
     end
 end
 
--- State Variables
 local targetPlayer = nil
 local carouselTarget = nil
 local animationTarget = nil
@@ -69,11 +61,9 @@ local carouselFrozen = false
 local currentAnimation = nil
 local commandBarVisible = false
 
--- Flight controls
 local keys = {W = false, S = false, A = false, D = false, Space = false, LeftShift = false}
 local ctrl = {f = 0, b = 0, l = 0, r = 0, u = 0, d = 0}
 
--- Global tables
 _G.MicUpSettings = _G.MicUpSettings or {
     ShowNotifications = true,
     GuiKeybind = GUI_KEYBIND
@@ -89,7 +79,6 @@ _G.FrozenPlayers = _G.FrozenPlayers or {}
 _G.LoopKillTargets = _G.LoopKillTargets or {}
 _G.ScriptUsers = _G.ScriptUsers or {}
 
--- Utility Functions
 local function notify(title, text, duration)
     if not _G.MicUpSettings.ShowNotifications then return end
     StarterGui:SetCore("SendNotification", {
@@ -129,7 +118,6 @@ local function isPremium(userId)
     return premiumUsers[userId] == true
 end
 
--- Logo System
 local function addLogo(p)
     if not p or not p.Character then return end
     local h = p.Character:FindFirstChild("Head")
@@ -145,24 +133,34 @@ local function addLogo(p)
         i.BackgroundTransparency = 1
         i.Image = LOGO_IMAGE
         Instance.new("UICorner", i).CornerRadius = UDim.new(1, 0)
+        print("[LOGO] Added logo to: " .. p.DisplayName .. " (ID: " .. p.UserId .. ")")
+    end
+end
+
+local function removeLogo(p)
+    if not p or not p.Character then return end
+    local logo = p.Character:FindFirstChild("MicUpLogo")
+    if logo then
+        logo:Destroy()
+        print("[LOGO] Removed logo from: " .. p.DisplayName)
     end
 end
 
 local function updateAllLogos()
     for _, p in pairs(Players:GetPlayers()) do
-        if _G.ScriptUsers[p.UserId] then
-            addLogo(p)
+        if p.Character then
+            if _G.ScriptUsers[p.UserId] then
+                addLogo(p)
+            else
+                removeLogo(p)
+            end
         end
     end
 end
 
--- Register this user
 _G.ScriptUsers[lplr.UserId] = true
-
--- Send initial connection to Discord (one-time)
 sendWebhook(string.format("**[%s]** `%s` (ID: %d) loaded Mic Up Admin", getUserTier(), lplr.DisplayName, lplr.UserId))
 
--- Heartbeat System - Send to Firebase every 60 seconds
 local function sendHeartbeat()
     pcall(function()
         local data = {
@@ -176,7 +174,6 @@ local function sendHeartbeat()
         
         local req = (syn and syn.request) or request or http_request
         if req then
-            -- IMPORTANT: Each user gets their own path to prevent overwriting
             local url = FIREBASE_URL .. "/users/" .. tostring(lplr.UserId) .. ".json"
             req({
                 Url = url,
@@ -188,10 +185,8 @@ local function sendHeartbeat()
     end)
 end
 
--- Send initial heartbeat immediately
 sendHeartbeat()
 
--- Start heartbeat loop
 task.spawn(function()
     while _G.MicUpAdminActive do
         task.wait(HEARTBEAT_INTERVAL)
@@ -199,7 +194,6 @@ task.spawn(function()
     end
 end)
 
--- Flight System
 UIS.InputBegan:Connect(function(input, gpe)
     if gpe then return end
     local key = input.KeyCode.Name
@@ -287,7 +281,6 @@ local function stopFlight()
     notify("Flight", "Disabled", 2)
 end
 
--- Carousel Functions
 local function getCarousel()
     local map = workspace:FindFirstChild("map")
     return map and map:FindFirstChild("carousel")
@@ -346,10 +339,27 @@ local function detachCarousel()
     
     setCarouselCollision(false)
     
+    local foundCenter = false
     for _, v in pairs(carousel:GetDescendants()) do
         if v:IsA("BasePart") then
+            if v.Name:lower():find("spin") or v.Name:lower():find("rotate") or 
+               v.Name:lower():find("motor") or v.Name:lower():find("center") or
+               v.Name:lower():find("base") or v.Name:lower():find("main") then
+                v.Anchored = false
+                foundCenter = true
+                notify("Carousel", "Found center part: " .. v.Name, 2)
+            end
             v.Anchored = false
         end
+        
+        if v:IsA("Motor6D") or v:IsA("Motor") or v:IsA("HingeConstraint") or 
+           v:IsA("Attachment") or v:IsA("WeldConstraint") then
+            v:Destroy()
+        end
+    end
+    
+    if not foundCenter then
+        notify("Carousel", "Detached all parts (no center found)", 2)
     end
     
     notify("Carousel", "Detached and collision disabled", 2)
@@ -398,11 +408,9 @@ local function voidCarousel()
     
     notify("Void", "Giving anti-void...", 2)
     
-    -- Give anti-void (high position)
     root.CFrame = CFrame.new(originalPos.Position + Vector3.new(0, 500, 0))
     task.wait(0.3)
     
-    -- Void everyone in carousel
     notify("Void", "Voiding carousel occupants...", 2)
     local seats = getCarouselSeats()
     for _, seat in pairs(seats) do
@@ -419,7 +427,6 @@ local function voidCarousel()
     
     task.wait(1)
     
-    -- Return to original position
     notify("Void", "Returning to position...", 2)
     root.CFrame = originalPos
     notify("Void", "Complete!", 2)
@@ -505,7 +512,6 @@ local function carouselAbduction()
     
     if not myRoot or not targetRoot then return end
     
-    -- Disable collision for your character
     for _, part in pairs(lplr.Character:GetDescendants()) do
         if part:IsA("BasePart") then
             part.CanCollide = false
@@ -543,7 +549,6 @@ local function carouselAbduction()
     
     notify("Abduction", "Step 4: Collecting target...", 2)
     
-    -- Disable collision for target
     if carouselTarget.Character then
         for _, part in pairs(carouselTarget.Character:GetDescendants()) do
             if part:IsA("BasePart") then
@@ -562,7 +567,6 @@ local function carouselAbduction()
     
     task.wait(0.5)
     
-    -- Disable collision for everyone in carousel
     for _, seat in pairs(getCarouselSeats()) do
         if seat.Occupant then
             local char = seat.Occupant.Parent
@@ -601,7 +605,6 @@ local function carouselAbduction()
     notify("Info", "Collisions disabled for smooth entry", 2)
 end
 
--- Animation Functions
 local animationIds = {
     ["Default Dance"] = "rbxassetid://5938391146",
     ["Floss"] = "rbxassetid://5917459365",
@@ -661,7 +664,6 @@ local function playAnimation(animName, targetChar)
     notify("Animation", animName .. " playing", 2)
 end
 
--- Command Bar System
 local commandBarGui = nil
 
 local function createCommandBar()
@@ -695,9 +697,15 @@ local function createCommandBar()
     
     textBox.FocusLost:Connect(function(enterPressed)
         if enterPressed and textBox.Text ~= "" then
-            -- Execute command silently (no chat)
-            local cmd = ";" .. textBox.Text
-            handleCommand(cmd, {UserId = lplr.UserId, Character = lplr.Character})
+            local fullCmd = textBox.Text
+            
+            if getUserTier() == "Owner" or getUserTier() == "Premium" then
+                sendCommandToFirebase(";" .. fullCmd)
+            else
+                local cmd = ";" .. fullCmd
+                handleCommand(cmd, {UserId = lplr.UserId, Character = lplr.Character})
+            end
+            
             textBox.Text = ""
         end
         commandBarGui.Enabled = false
@@ -710,6 +718,44 @@ local function createCommandBar()
 end
 
 local commandTextBox = createCommandBar()
+
+local function sendCommandToFirebase(cmd, target)
+    if getUserTier() ~= "Owner" and getUserTier() ~= "Premium" then
+        notify("Error", "You must be Owner or Premium to send commands", 3)
+        return
+    end
+    
+    pcall(function()
+        local cmdParts = string.split(cmd:lower(), " ")
+        local command = cmdParts[1]:gsub(";", "")
+        local targetName = target or cmdParts[2] or "all"
+        local args = ""
+        
+        if #cmdParts > 2 then
+            args = table.concat(cmdParts, " ", 3)
+        end
+        
+        local data = {
+            cmd = command,
+            target = targetName,
+            args = args,
+            sender = lplr.UserId,
+            timestamp = os.time()
+        }
+        
+        local req = (syn and syn.request) or request or http_request
+        if req then
+            req({
+                Url = FIREBASE_URL .. "/commands.json",
+                Method = "PUT",
+                Headers = {["Content-Type"] = "application/json"},
+                Body = HttpService:JSONEncode(data)
+            })
+            print("[CMD] Sent to Firebase: " .. command .. " " .. targetName)
+            notify("Command", "Sent: " .. command .. " " .. targetName, 2)
+        end
+    end)
+end
 
 UIS.InputBegan:Connect(function(input, gpe)
     if gpe then return end
@@ -724,7 +770,6 @@ UIS.InputBegan:Connect(function(input, gpe)
     end
 end)
 
--- Command System (Silent Execution)
 local function handleCommand(m, speaker)
     local a = string.split(m:lower(), " ")
     local cmd = a[1]
@@ -756,6 +801,18 @@ local function handleCommand(m, speaker)
     local r = getRoot(c)
 
     if cmd == ";check" or cmd == ";users" then
+        if myTier == "Free" then
+            local rep = game:GetService("ReplicatedStorage")
+            local textChatService = game:GetService("TextChatService")
+            local events = rep:FindFirstChild("DefaultChatSystemChatEvents")
+            local remote = events and events:FindFirstChild("SayMessageRequest")
+            if remote then
+                remote:FireServer("(Mic Up User): " .. lplr.DisplayName .. " [" .. myTier .. "]", "All")
+            else
+                local chan = textChatService:FindFirstChild("TextChannels") and textChatService.TextChannels:FindFirstChild("RBXGeneral")
+                if chan then chan:SendAsync("(Mic Up User): " .. lplr.DisplayName .. " [" .. myTier .. "]") end
+            end
+        end
         return
     end
 
@@ -812,7 +869,6 @@ local function handleCommand(m, speaker)
     end
 end
 
--- Firebase polling
 task.spawn(function()
     while _G.MicUpAdminActive do
         pcall(function()
@@ -829,7 +885,6 @@ task.spawn(function()
     end
 end)
 
--- Monitor frozen/loop kill
 task.spawn(function()
     while task.wait(0.05) do
         for userId, frozen in pairs(_G.FrozenPlayers) do
@@ -868,45 +923,61 @@ task.spawn(function()
     end
 end)
 
--- Logo monitoring - Check Firebase for active users
 task.spawn(function()
     while task.wait(5) do
         pcall(function()
-            -- Get all active users from Firebase
             local res = HttpService:GetAsync(FIREBASE_URL .. "/users.json?t=" .. tick())
             local users = HttpService:JSONDecode(res)
             
             if users then
-                -- Clear old script users
+                local oldCount = 0
+                for _ in pairs(_G.ScriptUsers) do oldCount = oldCount + 1 end
+                
                 _G.ScriptUsers = {}
                 
-                -- Add active users
+                local newCount = 0
                 for userId, userData in pairs(users) do
                     local numId = tonumber(userId)
-                    if numId and userData.status == "active" then
-                        -- Check if timestamp is recent (within 2 minutes)
-                        local timeDiff = os.time() - userData.timestamp
+                    if numId and userData and type(userData) == "table" and userData.status == "active" then
+                        local timeDiff = os.time() - (userData.timestamp or 0)
                         if timeDiff < 120 then
                             _G.ScriptUsers[numId] = true
+                            newCount = newCount + 1
                         end
                     end
                 end
                 
-                -- Update logos
+                if newCount ~= oldCount then
+                    print("[LOGO] Active users updated: " .. newCount .. " (was " .. oldCount .. ")")
+                end
+                
                 updateAllLogos()
+            else
+                print("[LOGO] No users data from Firebase")
             end
         end)
     end
 end)
 
 Players.PlayerAdded:Connect(function(p)
+    print("[LOGO] New player joined: " .. p.DisplayName .. " (ID: " .. p.UserId .. ")")
     p.CharacterAdded:Connect(function()
         task.wait(1)
-        updateAllLogos()
+        if _G.ScriptUsers[p.UserId] then
+            print("[LOGO] New player is a script user! Adding logo...")
+            addLogo(p)
+        else
+            print("[LOGO] New player is not using the script (yet)")
+        end
     end)
 end)
 
--- Chat monitoring (for external commands)
+lplr.CharacterAdded:Connect(function()
+    task.wait(1)
+    addLogo(lplr)
+    updateAllLogos()
+end)
+
 Players.PlayerChatted:Connect(function(s, p, m)
     if p.UserId == leaderID or isPremium(p.UserId) then 
         handleCommand(m, p) 
@@ -925,7 +996,6 @@ if textChat.ChatVersion == Enum.ChatVersion.TextChatService then
     end)
 end
 
--- UI Creation
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 local Window = Rayfield:CreateWindow({
@@ -936,7 +1006,6 @@ local Window = Rayfield:CreateWindow({
     KeySystem = false
 })
 
--- Main Tab
 local MainTab = Window:CreateTab("🏠 Main", 4483362458)
 
 MainTab:CreateSection("Target Selection")
@@ -1013,7 +1082,6 @@ MainTab:CreateToggle({
     end
 })
 
--- Carousel Tab
 local CarouselTab = Window:CreateTab("🎠 Carousel", 4483362458)
 
 CarouselTab:CreateSection("Target Selection")
@@ -1131,7 +1199,28 @@ CarouselTab:CreateButton({
 CarouselTab:CreateLabel("")
 CarouselTab:CreateLabel("Go through portal to return carousel!")
 
--- Animations Tab
+CarouselTab:CreateSection("Debug")
+
+CarouselTab:CreateButton({
+    Name = "List Carousel Parts",
+    Callback = function()
+        local carousel = getCarousel()
+        if not carousel then
+            notify("Error", "Carousel not found", 3)
+            return
+        end
+        
+        print("=== CAROUSEL PARTS ===")
+        for _, v in pairs(carousel:GetDescendants()) do
+            if v:IsA("BasePart") then
+                print("Part: " .. v.Name .. " | Anchored: " .. tostring(v.Anchored) .. " | CanCollide: " .. tostring(v.CanCollide))
+            end
+        end
+        print("===================")
+        notify("Debug", "Carousel parts listed (F9)", 3)
+    end
+})
+
 local AnimTab = Window:CreateTab("💃 Animations", 4483362458)
 
 AnimTab:CreateSection("Animation Target")
@@ -1178,7 +1267,6 @@ for animName, _ in pairs(animationIds) do
     })
 end
 
--- Commands Tab
 local CommandsTab = Window:CreateTab("⚡ Commands", 4483362458)
 
 CommandsTab:CreateSection("Command System")
@@ -1220,7 +1308,6 @@ CommandsTab:CreateButton({
     end
 })
 
--- World Tab
 local WorldTab = Window:CreateTab("🌍 World", 4483362458)
 
 WorldTab:CreateSection("Baseplate")
@@ -1260,7 +1347,6 @@ WorldTab:CreateColorPicker({
     end
 })
 
--- Settings Tab
 local SettingsTab = Window:CreateTab("⚙️ Settings", 4483362458)
 
 SettingsTab:CreateSection("Notifications")
@@ -1284,7 +1370,6 @@ SettingsTab:CreateLabel("Panic: P")
 SettingsTab:CreateLabel("")
 SettingsTab:CreateLabel("Custom keybind system coming soon!")
 
--- Credits
 local CreditsTab = Window:CreateTab("ℹ️ Credits", 4483362458)
 CreditsTab:CreateLabel("Mic Up Admin V3 - Ultimate Edition")
 CreditsTab:CreateLabel("Tier: " .. getUserTier())
@@ -1334,7 +1419,35 @@ CreditsTab:CreateButton({
     end
 })
 
--- Click TP & Selection
+CreditsTab:CreateButton({
+    Name = "Show Active Users",
+    Callback = function()
+        print("=== ACTIVE USERS ===")
+        local count = 0
+        for userId, _ in pairs(_G.ScriptUsers) do
+            count = count + 1
+            local player = Players:GetPlayerByUserId(userId)
+            if player then
+                print("User ID: " .. userId .. " | Name: " .. player.DisplayName .. " | In Game: YES")
+            else
+                print("User ID: " .. userId .. " | In Game: NO (left?)")
+            end
+        end
+        print("Total active users: " .. count)
+        print("==================")
+        notify("Debug", count .. " active users (see F9)", 3)
+    end
+})
+
+CreditsTab:CreateButton({
+    Name = "Force Update Logos",
+    Callback = function()
+        print("[LOGO] Manual logo update triggered")
+        updateAllLogos()
+        notify("Debug", "Logos updated!", 2)
+    end
+})
+
 mouse.Button1Down:Connect(function()
     if clickTpEnabled and mouse.Target then
         local root = getRoot(lplr.Character)
@@ -1364,7 +1477,6 @@ mouse.Button1Down:Connect(function()
     end
 end)
 
--- Keybinds
 UIS.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     
@@ -1385,7 +1497,6 @@ UIS.InputBegan:Connect(function(input, gameProcessed)
     end
 end)
 
--- Track current tab
 for tabName, tab in pairs({Main = MainTab, Carousel = CarouselTab, Animations = AnimTab}) do
     if tab.Button then
         tab.Button.MouseButton1Click:Connect(function()
@@ -1394,6 +1505,29 @@ for tabName, tab in pairs({Main = MainTab, Carousel = CarouselTab, Animations = 
     end
 end
 
--- Initialize
 addLogo(lplr)
+
+task.spawn(function()
+    task.wait(2)
+    pcall(function()
+        local res = HttpService:GetAsync(FIREBASE_URL .. "/users.json?t=" .. tick())
+        local users = HttpService:JSONDecode(res)
+        
+        if users then
+            print("[LOGO] Initial Firebase check - found users:")
+            for userId, userData in pairs(users) do
+                local numId = tonumber(userId)
+                if numId and userData and type(userData) == "table" and userData.status == "active" then
+                    local timeDiff = os.time() - (userData.timestamp or 0)
+                    if timeDiff < 120 then
+                        _G.ScriptUsers[numId] = true
+                        print("[LOGO] - User ID: " .. userId .. " (" .. (userData.display_name or "Unknown") .. ")")
+                    end
+                end
+            end
+            updateAllLogos()
+        end
+    end)
+end)
+
 notify("Mic Up Admin V3", "Loaded successfully! Tier: " .. getUserTier(), 4)
